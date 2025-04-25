@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>优化版SDF角色移动系统</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas { 
+            display: block; 
+            cursor: crosshair;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 8px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">WASD移动 | 点击添加障碍物 | 空格切换调试视图</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        /**
+         * SDF系统
+         */
+        class SDFSystem {
+            constructor(resolution = 4) {
+                this.resolution = Math.max(1, resolution);
+                this.grid = null;
+                this.width = 0;
+                this.height = 0;
+            }
+
+            init(canvas) {
+                this.width = Math.ceil(canvas.width / this.resolution);
+                this.height = Math.ceil(canvas.height / this.resolution);
+                this.grid = new Float32Array(this.width * this.height);
+                this.clear();
+            }
+
+            clear() {
+                this.grid.fill(Infinity);
+            }
+
+            update(obstacles) {
+                this.clear();
+                
+                for (let y = 0; y < this.height; y++) {
+                    for (let x = 0; x < this.width; x++) {
+                        const px = x * this.resolution;
+                        const py = y * this.resolution;
+                        let minDist = Infinity;
+
+                        for (const obs of obstacles) {
+                            if (!obs.w || !obs.h) continue;
+                            
+                            const dx = Math.max(obs.x - px, 0, px - (obs.x + obs.w));
+                            const dy = Math.max(obs.y - py, 0, py - (obs.y + obs.h));
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            minDist = Math.min(minDist, dist);
+                        }
+                        
+                        this.grid[y * this.width + x] = minDist;
+                    }
+                }
+            }
+
+            query(x, y) {
+                const nx = x / this.resolution;
+                const ny = y / this.resolution;
+                const x1 = Math.floor(nx);
+                const y1 = Math.floor(ny);
+                
+                // 双线性插值
+                const x2 = x1 + 1;
+                const y2 = y1 + 1;
+                const dx = nx - x1;
+                const dy = ny - y1;
+                
+                return this.lerp(
+                    this.lerp(this.getValue(x1, y1), this.getValue(x2, y1), dx),
+                    this.lerp(this.getValue(x1, y2), this.getValue(x2, y2), dx),
+                    dy
+                );
+            }
+
+            getValue(x, y) {
+                x = Math.max(0, Math.min(this.width - 1, x));
+                y = Math.max(0, Math.min(this.height - 1, y));
+                return this.grid[y * this.width + x];
+            }
+
+            lerp(a, b, t) {
+                return a + (b - a) * Math.min(1, Math.max(0, t));
+            }
+        }
+
+        /**
+         * 游戏主类
+         */
+        class Game {
+            constructor() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.resize();
+                window.addEventListener('resize', () => this.resize());
+                
+                // SDF系统初始化
+                this.sdf = new SDFSystem(4);
+                this.sdf.init(this.canvas);
+                
+                // 游戏对象
+                this.obstacles = this.generateObstacles(10);
+                this.player = {
+                    x: this.canvas.width / 2,
+                    y: this.canvas.height / 2,
+                    radius: 20,
+                    speed: 250
+                };
+                
+                // 控制状态
+                this.keys = {};
+                this.mouse = { down: false };
+                this.debugView = false;
+                
+                // 初始化
+                this.setupControls();
+                this.sdf.update(this.obstacles);
+                this.lastTime = performance.now();
+                requestAnimationFrame(this.loop.bind(this));
+            }
+
+            resize() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                if (this.sdf) this.sdf.init(this.canvas);
+            }
+
+            generateObstacles(count) {
+                const obstacles = [];
+                for (let i = 0; i < count; i++) {
+                    obstacles.push({
+                        x: Math.random() * (this.canvas.width - 200),
+                        y: Math.random() * (this.canvas.height - 200),
+                        w: 100 + Math.random() * 100,
+                        h: 100 + Math.random() * 100
+                    });
+                }
+                return obstacles;
+            }
+
+            setupControls() {
+                // 键盘控制
+                window.addEventListener('keydown', e => {
+                    this.keys[e.key.toLowerCase()] = true;
+                    if (e.key === ' ') this.debugView = !this.debugView;
+                });
+                window.addEventListener('keyup', e => {
+                    this.keys[e.key.toLowerCase()] = false;
+                });
+                
+                // 鼠标控制
+                this.canvas.addEventListener('mousedown', e => {
+                    this.mouse.down = true;
+                    this.addObstacle(e.clientX, e.clientY);
+                });
+                this.canvas.addEventListener('mousemove', e => {
+                    if (this.mouse.down) this.addObstacle(e.clientX, e.clientY);
+                });
+                window.addEventListener('mouseup', () => {
+                    this.mouse.down = false;
+                });
+            }
+
+            addObstacle(x, y) {
+                this.obstacles.push({
+                    x: x - 25,
+                    y: y - 25,
+                    w: 50,
+                    h: 50
+                });
+                this.sdf.update(this.obstacles);
+            }
+
+            loop(currentTime) {
+                const deltaTime = (currentTime - this.lastTime) / 1000;
+                this.lastTime = currentTime;
+                
+                this.update(deltaTime);
+                this.render();
+                requestAnimationFrame(this.loop.bind(this));
+            }
+
+            update(deltaTime) {
+                // 输入处理
+                const dir = { x: 0, y: 0 };
+                if (this.keys['w'] || this.keys['arrowup']) dir.y = -1;
+                if (this.keys['s'] || this.keys['arrowdown']) dir.y = 1;
+                if (this.keys['a'] || this.keys['arrowleft']) dir.x = -1;
+                if (this.keys['d'] || this.keys['arrowright']) dir.x = 1;
+                
+                // 归一化
+                const len = Math.sqrt(dir.x ** 2 + dir.y ** 2);
+                if (len > 0) {
+                    dir.x /= len;
+                    dir.y /= len;
+                }
+                
+                const speedPerDeltaTime = this.player.speed * deltaTime
+                // 安全移动
+                const newPos = {
+                    x: this.player.x + dir.x * speedPerDeltaTime,
+                    y: this.player.y + dir.y * speedPerDeltaTime
+                };
+                
+                const safePos = this.safeMove(this.player, newPos, speedPerDeltaTime);
+                this.player.x = safePos.x;
+                this.player.y = safePos.y;
+            }
+
+            safeMove(from, to, speedPerDeltaTime) {
+                const steps = Math.max(this.sdf.resolution,Math.ceil(speedPerDeltaTime)) + 1  // 分段步进
+                let current = {...from};
+                
+                
+                for (let i = 0; i < steps; i++) {
+                    const t = (i + 1) / steps;
+                    const testPos = {
+                        x: from.x + (to.x - from.x) * t,
+                        y: from.y + (to.y - from.y) * t
+                    };
+                    
+                    const dist = this.sdf.query(testPos.x, testPos.y);
+                    if (dist > this.player.radius) {
+                        current = testPos;
+                    } else {
+                        // 碰撞响应
+                        const normal = this.getCollisionNormal(testPos.x, testPos.y);
+                        const remaining = {
+                            x: (to.x - from.x) * (1 - t),
+                            y: (to.y - from.y) * (1 - t)
+                        };
+                        
+                        // 计算滑动
+                        const dot = remaining.x * normal.x + remaining.y * normal.y;
+                        const slideX = remaining.x - normal.x * dot;
+                        const slideY = remaining.y - normal.y * dot;
+                        
+                        // 应用滑动
+                        current.x += slideX * 0.5;
+                        current.y += slideY * 0.5;
+                        break;
+                    }
+                }
+                
+                return current;
+            }
+
+            getCollisionNormal(x, y) {
+                // 二元函数梯度
+                const delta = 0.1;
+                const dx = (this.sdf.query(x + delta, y) - this.sdf.query(x, y)) / delta
+                const dy = (this.sdf.query(x, y + delta) - this.sdf.query(x, y)) / delta
+                const len = Math.sqrt(dx * dx + dy * dy);
+                // 归一化
+                return len > 0 ? { x: dx / len, y: dy / len } : { x: 0, y: 1 };
+            }
+
+            render() {
+                const ctx = this.ctx;
+                ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // 调试视图
+                if (this.debugView) {
+                    const imageData = ctx.createImageData(this.canvas.width, this.canvas.height);
+                    for (let y = 0; y < this.canvas.height; y++) {
+                        for (let x = 0; x < this.canvas.width; x++) {
+                            const dist = this.sdf.query(x, y);
+                            const idx = (y * this.canvas.width + x) * 4;
+                            const c = Math.min(255, Math.abs(dist) * 3);
+                            const v = Math.max(c,0)
+                            imageData.data[idx] = v
+                            imageData.data[idx + 1] = v
+                            imageData.data[idx + 2] = v
+                            imageData.data[idx + 3] = 255;
+                        }
+                    }
+                    ctx.putImageData(imageData, 0, 0);
+                }
+                
+                // 绘制障碍物
+                ctx.fillStyle = '#85DAF9';
+                for (const obs of this.obstacles) {
+                    ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
+                }
+                
+                // 绘制玩家
+                ctx.fillStyle = '#FFDF00';
+                ctx.beginPath();
+                ctx.arc(this.player.x, this.player.y, this.player.radius, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 绘制距离场
+                const dist = this.sdf.query(this.player.x, this.player.y);
+                ctx.strokeStyle = 'rgba(255,110,163)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(this.player.x, this.player.y, dist, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+        }
+
+        // 启动游戏
+        new Game();
+    </script>
+</body>
+</html>
