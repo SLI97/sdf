@@ -27,7 +27,7 @@
     <div id="info">WASD移动 | 点击添加障碍物 | 空格切换调试视图</div>
     <canvas id="gameCanvas"></canvas>
 
-    <script>
+    <script defer>
         /**
          * SDF系统
          */
@@ -329,7 +329,9 @@
         }
 
         // 启动游戏
-        new Game();
+        setTimeout(() => {
+            new Game();
+        }, 50);
     </script>
 </body>
 </html>
